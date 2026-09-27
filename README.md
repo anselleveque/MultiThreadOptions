@@ -1,0 +1,1 @@
+This is in progress, but it will be a multithreaded options pricer. Currently set up for european options with a closed form black scholes solution, but it can easily be adapted to options without a simple solution
