@@ -111,29 +111,92 @@ static double fill_results(const Market& mkt,const std::vector<Cell>& tasks,std:
     return std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-t0).count();
 }
 
-int main(){
-    std::vector<double> maturities{0.25,0.5,1.0,2.0}; //Maturity times in years
-    std::vector<double> strikes;
-    for (int i=80;i<=120;i+=5){
-        strikes.push_back(static_cast<double>(i)); //Strike prices (spot 100)
-    }
-
-    struct Cell{
-        double strike;
-        double time_to_expiry;
-    };
-    std::vector<Cell> tasks;
-
-    for (double T:maturities){
-        for (double K:strikes){
-            tasks.push_back({T,K});
-        }
-    }
-
-    std::vector<double> results(tasks.size(),0);
-
-
-
+static void print_results(const std::vector<Estimate>& out,const std::vector<double>& strikes,
+                            const std::vector<double>& maturities){
+    std::cout<<"\nCall Price Surface\n T\\K";
+    for (double k: strikes)
+        std::cout<<std::setw(8)<<std::setprecision(0)<<std::fixed<<k;
+    std::cout<<"\n";
     
+    for (std::size_t m=0;m<maturities.size();++m){
+        std::cout<<std::setw(5)<<std::setprecision(2)<<maturities[m];
+        for (std::size_t s=0;s<strikes.size();s++)
+            std::cout<<std::setw(8)<<std::setprecision(3)<<out[m*strikes.size()+s].price; //Ordering Contract@
+            std::cout<<"\n";
+        
+    }
+}
 
+int main(){
+    std::cout<<std::fixed;
+
+    const Market mkt;
+
+    std::vector<double> strikes;
+    for (int i=0;i<9;i++)
+        strikes.push_back(80.0+5.0*i); //Create strikes (test numbers)
+    const std::vector<double> maturities{0.25,0.5,1.0,2.0}; //Create maturities (test numbers)
+
+    const std::vector<Cell> tasks=build_tasks(strikes,maturities);
+    std::vector<Estimate> out(tasks.size());
+    std::vector<Estimate> reference(tasks.size());
+
+    const unsigned hw=std::max(1u,std::thread::hardware_concurrency());
+    std::cout<<static_cast<long>(tasks.size())*mkt.paths<<" path sims ("<<tasks.size()<<" cells, "<<mkt.paths<<" paths) ("
+             <<hw<<" hardware threads reported) \n";
+    
+    double base=0.0;
+    bool all_identical=true;
+
+    for (unsigned t:{1u,2u,4u}){
+        double best=1e18;
+        for (int rep=0;rep<3;++rep)
+            best=std::min(best,fill_results(mkt,tasks,out,t));
+
+        if (t==1){base=best;reference=out;}
+
+        bool same=true;
+        for (std::size_t i=0;i<out.size();++i)
+            if (out[i].price!=reference[i].price){same=false;break;}
+        all_identical=all_identical && same;
+
+        std::cout<<"threads: "<<t<<"\n";
+        std::cout<<"time: "<<best<<" ms\n";
+        std::cout<<"speedup: "<<base/best<<"x\n";
+        std::cout<<"bitwise identical: "<<(same ? "yes": "NO - problem")<<"\n";     
+    }
+
+    std::cout<<"every thread gives same output: "<<(all_identical ? "yes": "NO - problem")<<"\n\n\n";
+
+    //Closed form verification
+    double max_se=0.0;
+    for (const Estimate& e: out) 
+        max_se=std::max(max_se,e.std_error);
+    
+    std::size_t idx=0;
+    bool found=false;
+    for (std::size_t i=0;i<tasks.size();++i)
+        if (tasks[i].strike==100.0 && tasks[i].time_to_expiry==1.0){
+            idx=i;found=true;
+        }
+
+    if (found){
+        const double truth=bs_call(mkt.S0,tasks[idx].strike,mkt.rate,mkt.sigma,tasks[idx].time_to_expiry);
+        const double error=std::fabs(out[idx].price-truth);
+        const double se=out[idx].std_error;
+
+        std::cout<<"spot scheck k=100,t=1\n";
+        std::cout<<"monte carlo: "<<out[idx].price<<"+/-"<<se<<"\n";
+        std::cout<<"black scholes: "<<truth<<"\n";
+        std::cout<<"|error|: "<<error;
+
+        if (se>0.0) //No division by 0
+            std::cout<<" ("<<error/se<<" std. errors) "
+                     <<(error<=2.0*se ? "(PASS, error<=2.0*se)":"(FAIL, error>2.0*se)");
+        else
+            std::cout<<" (std. error is 0 -- INVESTIGATE)\n";
+            std::cout<<" \nlargest SE on surface: "<<max_se<<"\n";
+    }
+    print_results(out,strikes,maturities);
+    return 0;
 }
